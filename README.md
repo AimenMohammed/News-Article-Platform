@@ -19,11 +19,13 @@ This project implements a **complete data engineering pipeline** following the *
 
 ## 🏗️ Architecture
 
+```mermaid
 flowchart LR
     subgraph Sources["Data Sources"]
         WS[External Websites / News APIs] --> NF[Apache NiFi]
         NF --> K[Kafka]
         K --> B[Bronze Layer]
+        
         C[Web Scraper] --> B
         D[Batch Simulator] --> B
     end
