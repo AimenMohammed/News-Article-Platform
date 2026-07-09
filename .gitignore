@@ -18,7 +18,7 @@ build/
 
 # Jupyter Notebooks
 *.ipynb
-
+*.py
 databases_query.ipynb
 
 # Docker Volumes
