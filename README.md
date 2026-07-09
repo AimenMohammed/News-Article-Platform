@@ -19,20 +19,18 @@ This project implements a **complete data engineering pipeline** following the *
 
 ## 🏗️ Architecture
 
-```mermaid
 flowchart LR
     subgraph Sources["Data Sources"]
         WS[External Websites / News APIs] --> NF[Apache NiFi]
         NF --> K[Kafka]
         K --> B[Bronze Layer]
-        
         C[Web Scraper] --> B
         D[Batch Simulator] --> B
     end
 
     subgraph Processing["Processing Layers"]
-        B --> E[Silver Layer\n(Cleaning, Enrichment, Classification)]
-        E --> F[Gold Layer\n(8 Analytical Data Marts)]
+        B --> E["Silver Layer\n(Cleaning, Enrichment, Classification)"]
+        E --> F["Gold Layer\n(8 Analytical Data Marts)"]
     end
 
     subgraph Serving["Serving Layer"]
