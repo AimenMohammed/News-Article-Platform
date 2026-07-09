@@ -17,7 +17,7 @@ build/
 *.ear
 
 # Jupyter Notebooks
-# *.ipynb
+*.ipynb
 
 databases_query.ipynb
 
