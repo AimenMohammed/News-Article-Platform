@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 10s       # Scrape metrics every 10 seconds for real-time monitoring
+  evaluation_interval: 10s   # Evaluate rules and alerts every 10 seconds
+
+scrape_configs:
+  # Monitor the Prometheus server itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Monitor ClickHouse metrics (using standard port 9363 or custom API port 8001)
+  - job_name: 'clickhouse-pipeline'
+    static_configs:
+      - targets: ['clickhouse:9363']
+
+  # Track data pipeline operations and ingestion metrics
+  - job_name: 'news-pipeline-app'
+    static_configs:
+      - targets: ['app-exporter:8000']

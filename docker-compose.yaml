@@ -1,0 +1,600 @@
+# =====================================================================
+# 1. Common Configurations (Anchors)
+# =====================================================================
+x-healthcheck: &default-healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow_db
+  AIRFLOW__CORE__FERNET_KEY: 46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DEFAULT_TIMEZONE: "Asia/Riyadh"
+  AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: 300
+  AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: "Asia/Riyadh"
+  TZ: "Asia/Riyadh"
+  _PIP_ADDITIONAL_REQUIREMENTS: ""
+  PYTHONPATH: "/opt/airflow"
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.1
+  environment:
+    <<: *airflow-env
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: 'postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow_db'
+    AIRFLOW__LOGGING__BASE_LOG_FOLDER: '/opt/airflow/logs'
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - /var/run/docker.sock:/var/run/docker.sock
+  user: "50000:0"
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+x-spark-env: &spark-env
+  SPARK_RPC_AUTHENTICATION_ENABLED: "no"
+  SPARK_RPC_ENCRYPTION_ENABLED: "no"
+  SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
+  SPARK_SSL_ENABLED: "no"
+  PYSPARK_PYTHON: python3
+  PYSPARK_DRIVER_PYTHON: python
+  HADOOP_USER_NAME: hadoop
+
+# =====================================================================
+# 2. Services
+# =====================================================================
+services:
+
+  # ===================================================================
+  # 🧱 قاعدة البيانات المشتركة للأتمتة والتحليلات
+  # ===================================================================
+  postgres-airflow:
+    image: postgres:14-alpine
+    container_name: postgres-airflow
+    restart: unless-stopped
+    profiles: ["orchestration", "analytics", "bigdata-core"]
+    environment:
+      POSTGRES_DB: airflow_db
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+    ports:
+      - "5433:5432" 
+    volumes:
+      - postgres_airflow_data:/var/lib/postgresql/data
+    networks:
+      - data-eng-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow_db"]
+      <<: *default-healthcheck
+
+  # ===================================================================
+  # 🌊 PROFILE: nifi-stream (أداة سحب وتدفق البيانات)
+  # ===================================================================
+  nifi:
+    image: apache/nifi:1.25.0
+    container_name: nifi
+    restart: unless-stopped
+    profiles: ["nifi-stream"]
+    ports:
+      - "8443:8443"
+    environment:
+      SINGLE_USER_CREDENTIALS_USERNAME: admin
+      SINGLE_USER_CREDENTIALS_PASSWORD: SuperSecretPassword123!
+    volumes:
+      - nifi_conf:/opt/nifi/nifi-current/conf
+      - nifi_database:/opt/nifi/nifi-current/database_repository
+      - nifi_flowfile:/opt/nifi/nifi-current/flowfile_repository
+      - nifi_content:/opt/nifi/nifi-current/content_repository
+      - nifi_provenance:/opt/nifi/nifi-current/provenance_repository
+      - nifi_state:/opt/nifi/nifi-current/state_management
+    networks:
+      - data-eng-net
+
+  # ===================================================================
+  # 🚀 PROFILE: bigdata-core (كافكا، هادوف، وايسبرغ)
+  # ===================================================================
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    restart: unless-stopped
+    profiles: ["bigdata-core"]
+    user: root
+    entrypoint: [ "sh", "-c", "chown -R 1000:1000 /tmp/kraft-combined-logs && exec /etc/kafka/docker/run" ]
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_HEAP_OPTS: -Xmx1G -Xms1G
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+    networks:
+      - data-eng-net
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 29092 || exit 1"]
+      <<: *default-healthcheck
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    profiles: ["bigdata-core"]
+    depends_on:
+      kafka:
+        condition: service_healthy 
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: Local-KRaft
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    networks:
+      - data-eng-net
+
+  namenode:
+    image: apache/hadoop:3.3.6
+    container_name: namenode
+    restart: unless-stopped
+    profiles: ["bigdata-core"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mkdir -p /opt/hadoop/etc/hadoop
+        cat <<EOF > /opt/hadoop/etc/hadoop/core-site.xml
+        <?xml version="1.0" encoding="UTF-8"?>
+        <configuration>
+            <property><name>fs.defaultFS</name><value>hdfs://namenode:9000</value></property>
+        </configuration>
+        EOF
+        cat <<EOF > /opt/hadoop/etc/hadoop/hdfs-site.xml
+        <configuration>
+            <property><name>dfs.replication</name><value>1</value></property>
+            <property><name>dfs.client.use.datanode.hostname</name><value>true</value></property>
+        </configuration>
+        EOF
+        if [ ! -d /opt/hadoop/data/dfs/name/current ]; then
+          hdfs namenode -format -clusterId bigdata_cluster -force -nonInteractive
+        fi
+        exec hdfs namenode
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    volumes:
+      - namenode_data:/opt/hadoop/data/dfs/name
+    networks:
+      - data-eng-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:9870/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  secondarynamenode:
+    image: apache/hadoop:3.3.6
+    container_name: secondarynamenode
+    restart: unless-stopped
+    profiles: ["bigdata-core"]
+    depends_on:
+      namenode:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mkdir -p /opt/hadoop/etc/hadoop
+        cat <<EOF > /opt/hadoop/etc/hadoop/core-site.xml
+        <?xml version="1.0" encoding="UTF-8"?>
+        <configuration>
+            <property><name>fs.defaultFS</name><value>hdfs://namenode:9000</value></property>
+        </configuration>
+        EOF
+        exec hdfs secondarynamenode
+    ports:
+      - "9868:9868"
+    volumes:
+      - secondary_namenode_data:/opt/hadoop/data/dfs/namesecondary
+    networks:
+      - data-eng-net
+
+  datanode:
+    image: apache/hadoop:3.3.6
+    container_name: datanode
+    restart: unless-stopped
+    profiles: ["bigdata-core"]
+    depends_on:
+      namenode:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mkdir -p /opt/hadoop/etc/hadoop
+        cat <<EOF > /opt/hadoop/etc/hadoop/core-site.xml
+        <?xml version="1.0" encoding="UTF-8"?>
+        <configuration>
+            <property><name>fs.defaultFS</name><value>hdfs://namenode:9000</value></property>
+        </configuration>
+        EOF
+        cat <<EOF > /opt/hadoop/etc/hadoop/hdfs-site.xml
+        <configuration>
+            <property><name>dfs.replication</name><value>1</value></property>
+            <property><name>dfs.client.use.datanode.hostname</name><value>true</value></property>
+        </configuration>
+        EOF
+        exec hdfs datanode
+    ports:
+      - "9864:9864"
+    volumes:
+      - datanode_data:/opt/hadoop/data/dfs/data
+    networks:
+      - data-eng-net
+
+  resourcemanager:
+    image: apache/hadoop:3.3.6
+    container_name: resourcemanager
+    restart: unless-stopped
+    profiles: ["bigdata-core"]
+    depends_on:
+      namenode:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mkdir -p /opt/hadoop/etc/hadoop
+        cat <<EOF > /opt/hadoop/etc/hadoop/core-site.xml
+        <?xml version="1.0" encoding="UTF-8"?>
+        <configuration>
+            <property><name>fs.defaultFS</name><value>hdfs://namenode:9000</value></property>
+        </configuration>
+        EOF
+        cat <<EOF > /opt/hadoop/etc/hadoop/yarn-site.xml
+        <configuration>
+            <property><name>yarn.resourcemanager.hostname</name><value>resourcemanager</value></property>
+            <property><name>yarn.nodemanager.aux-services</name><value>mapreduce_shuffle</value></property>
+        </configuration>
+        EOF
+        exec yarn resourcemanager
+    ports:
+      - "8088:8088"
+    networks:
+      - data-eng-net
+
+  nodemanager:
+    image: apache/hadoop:3.3.6
+    container_name: nodemanager
+    restart: unless-stopped
+    profiles: ["bigdata-core"]
+    depends_on:
+      resourcemanager:
+        condition: service_started
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mkdir -p /opt/hadoop/etc/hadoop
+        cat <<EOF > /opt/hadoop/etc/hadoop/core-site.xml
+        <?xml version="1.0" encoding="UTF-8"?>
+        <configuration>
+            <property><name>fs.defaultFS</name><value>hdfs://namenode:9000</value></property>
+        </configuration>
+        EOF
+        cat <<EOF > /opt/hadoop/etc/hadoop/yarn-site.xml
+        <configuration>
+            <property><name>yarn.resourcemanager.hostname</name><value>resourcemanager</value></property>
+            <property><name>yarn.nodemanager.aux-services</name><value>mapreduce_shuffle</value></property>
+        </configuration>
+        EOF
+        exec yarn nodemanager
+    ports:
+      - "8042:8042"
+    networks:
+      - data-eng-net
+
+  historyserver:
+    image: apache/hadoop:3.3.6
+    container_name: historyserver
+    restart: unless-stopped
+    profiles: ["bigdata-core"]
+    depends_on:
+      namenode:
+        condition: service_healthy
+      resourcemanager:
+        condition: service_started
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mkdir -p /opt/hadoop/etc/hadoop
+        cat <<EOF > /opt/hadoop/etc/hadoop/core-site.xml
+        <?xml version="1.0" encoding="UTF-8"?>
+        <configuration>
+            <property><name>fs.defaultFS</name><value>hdfs://namenode:9000</value></property>
+        </configuration>
+        EOF
+        exec mapred historyserver
+    ports:
+      - "19888:19888"
+    volumes:
+      - hadoop_history_data:/opt/hadoop/data/timeline
+    networks:
+      - data-eng-net
+
+  iceberg-rest:
+    image: tabulario/iceberg-rest:latest
+    container_name: iceberg-rest
+    profiles: ["bigdata-core"]
+    ports:
+      - "8181:8181"
+    environment:
+      # 1. تحديد المسار في الهادوب لتخزين ملفات البيانات
+      - CATALOG_WAREHOUSE=hdfs://namenode:9000/user/iceberg/warehouse
+      - CATALOG_IO__IMPL=org.apache.iceberg.hadoop.HadoopFileIO
+      
+      # 2. تحويل الكتالوج من ذاكرة مؤقتة إلى قاعدة بيانات مستمرة (JDBC)
+      - CATALOG_CATALOG__IMPL=org.apache.iceberg.jdbc.JdbcCatalog
+      - CATALOG_URI=jdbc:postgresql://postgres-airflow:5432/airflow_db
+      - CATALOG_JDBC_USER=airflow
+      - CATALOG_JDBC_PASSWORD=airflow
+      - CATALOG_JDBC_INITIALIZE=true
+      - CATALOG_NAME=rest_prod
+    depends_on:
+      namenode:
+        condition: service_healthy
+      postgres-airflow:
+        condition: service_healthy
+    networks:
+      - data-eng-net
+
+  # ===================================================================
+  # ⚡ PROFILE: processing (محرك المعالجة وجوبيتر والمفكّرات)
+  # ===================================================================
+  spark-master:
+    image: jupyter/pyspark-notebook:spark-3.5.0
+    container_name: spark-master
+    restart: unless-stopped
+    profiles: ["processing"]
+    user: root
+    command: >
+      /bin/bash -c "
+      pip install --no-cache-dir clickhouse_connect &&
+      /usr/local/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master
+      "
+    environment:
+      <<: *spark-env
+    ports:
+      - "8081:8080"
+      - "7077:7077"
+    volumes:
+      - ./conf/spark-defaults.conf:/usr/local/spark/conf/spark-defaults.conf
+      - spark_master_data:/opt/spark/work
+      - ./notebooks:/home/jovyan/work
+      - spark_ivy_cache:/home/jovyan/.ivy2
+    networks:
+      - data-eng-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080 || exit 1"]
+      <<: *default-healthcheck
+
+  spark-worker:
+    image: jupyter/pyspark-notebook:spark-3.5.0
+    container_name: spark-worker
+    hostname: spark-worker
+    restart: unless-stopped
+    profiles: ["processing"]
+    command: /usr/local/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment:
+      <<: *spark-env
+      SPARK_WORKER_MEMORY: 4G
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_DIR: /tmp/spark-work
+    volumes:
+      - ./conf/spark-defaults.conf:/usr/local/spark/conf/spark-defaults.conf
+      - ./notebooks:/home/jovyan/work
+    networks:
+      - data-eng-net
+
+  jupyter-spark:
+    image: jupyter/pyspark-notebook:spark-3.5.0
+    container_name: jupyter-spark
+    hostname: jupyter-spark
+    restart: unless-stopped
+    profiles: ["processing"]
+    ports:
+      - "8888:8888"
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+      SPARK_MASTER: "spark://spark-master:7077"
+      HADOOP_USER_NAME: hadoop
+      PYSPARK_SUBMIT_ARGS: >
+        --conf spark.driver.host=jupyter-spark
+        --conf spark.driver.bindAddress=0.0.0.0
+        pyspark-shell
+    command: start-notebook.sh --ServerApp.token='' --ServerApp.password='' --ServerApp.password_required=False
+    volumes:
+      - ./conf/spark-defaults.conf:/usr/local/spark/conf/spark-defaults.conf
+      - ./notebooks:/home/jovyan/work
+      - spark_ivy_cache:/home/jovyan/.ivy2  
+    networks:
+      - data-eng-net
+
+  # ===================================================================
+  # 📊 PROFILE: analytics (مستودع البيانات للتحليلات)
+  # ===================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse
+    restart: unless-stopped
+    profiles: ["analytics"]
+    ports:
+      - "8123:8123"
+      - "9001:9000"
+      - "8001:8001"
+    environment:
+      CLICKHOUSE_CONFIG_PROMETHEUS_ENDPOINT: "/metrics"
+      CLICKHOUSE_CONFIG_PROMETHEUS_PORT: "8001"
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_log:/var/log/clickhouse-server
+    networks:
+      - data-eng-net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      <<: *default-healthcheck
+
+  # ===================================================================
+  # 🌪️ PROFILE: orchestration (محرك إدارة الأتمتة وجدولة المهام)
+  # ===================================================================
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    profiles: ["orchestration"]
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Running database migrations..."
+        airflow db migrate
+        echo "Creating admin user..."
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true
+    networks:
+      - data-eng-net
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    restart: unless-stopped
+    profiles: ["orchestration"]
+    command: webserver
+    ports:
+      - "8085:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres-airflow:
+        condition: service_healthy
+    networks:
+      - data-eng-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      <<: *default-healthcheck
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    restart: unless-stopped
+    profiles: ["orchestration"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres-airflow:
+        condition: service_healthy
+    networks:
+      - data-eng-net
+
+  airflow-triggerer:
+    <<: *airflow-common
+    container_name: airflow-triggerer
+    restart: unless-stopped
+    profiles: ["orchestration"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres-airflow:
+        condition: service_healthy
+    networks:
+      - data-eng-net
+
+  # ===================================================================
+  # 📈 PROFILE: monitoring (المراقبة وجمع المقاييس)
+  # ===================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - data-eng-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - data-eng-net
+
+# =====================================================================
+# 3. Networks and Persistent Volumes
+# =====================================================================
+networks:
+  data-eng-net:
+    name: data-eng-net
+    driver: bridge
+
+volumes:
+  postgres_airflow_data:
+    driver: local
+  namenode_data:
+    driver: local
+  secondary_namenode_data:
+    driver: local
+  datanode_data:
+    driver: local
+  hadoop_history_data:
+    driver: local
+  spark_master_data:
+    driver: local
+  kafka_data:
+    driver: local
+  nifi_conf:
+    driver: local
+  nifi_database:
+    driver: local
+  nifi_flowfile:
+    driver: local
+  nifi_content:
+    driver: local
+  nifi_provenance:
+    driver: local
+  nifi_state:
+    driver: local
+  clickhouse_data:
+    driver: local
+  clickhouse_log:
+    driver: local
+  spark_ivy_cache:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
