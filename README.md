@@ -22,12 +22,12 @@ This project implements a **complete data engineering pipeline** following the *
 ```mermaid
 flowchart LR
     subgraph Sources["Data Sources"]
-        WS[External Websites / News APIs] --> NF[Apache NiFi]
+        WS["External Websites / News APIs"] --> NF["Apache NiFi"]
         NF --> K[Kafka]
-        K --> B[Bronze Layer]
+        K --> B["Bronze Layer"]
         
-        C[Web Scraper] --> B
-        D[Batch Simulator] --> B
+        C["Web Scraper"] --> B
+        D["Batch Simulator"] --> B
     end
 
     subgraph Processing["Processing Layers"]
@@ -36,17 +36,18 @@ flowchart LR
     end
 
     subgraph Serving["Serving Layer"]
-        F --> G[ClickHouse\n(Analytics Warehouse)]
-        G --> H[Grafana\n(Interactive Dashboards)]
+        F --> G["ClickHouse\n(Analytics Warehouse)"]
+        G --> H["Grafana\n(Interactive Dashboards)"]
     end
 
     subgraph Orchestration["Orchestration & Monitoring"]
-        I[Apache Airflow] --> B
+        I["Apache Airflow"] --> B
         I --> E
         I --> F
         I --> G
-        J[Prometheus] --> H
+        J["Prometheus"] --> H
     end
+```
 
 Data Flow Breakdown:
 
