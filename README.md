@@ -264,6 +264,8 @@ News_Article_Platform/
 │   ├── 2_scheduled_batch_dag.py
 │   ├── 3_gold_layer_update.py
 │   └── iceberg_maintenance.py
+│   └── scripts/
+│       └── iceberg_maintenance.py
 ├── notebooks/                         # PySpark scripts
 │   ├── bronze_ingestion.py
 │   ├── scrape_news.py

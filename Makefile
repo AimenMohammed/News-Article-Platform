@@ -144,3 +144,5 @@ load-clickhouse:
 # -----------------------------------------------------------------
 try: run-bronze run-silver run-gold load-clickhouse
 	@echo "All pipeline stages executed successfully. Data loaded into ClickHouse."
+
+	iceberg_maintenance.py
