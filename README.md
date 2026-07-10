@@ -128,6 +128,11 @@ Three main DAGs ensure fully automated pipeline execution:
 - `2_scheduled_batch_dag`: Runs every 15 minutes (scraping and batch simulation).
 - `3_gold_layer_update`: Runs every 15 minutes (Gold transformations and ClickHouse loading).
 
+**🧹 Production Maintenance (Iceberg)**:
+- `iceberg_production_maintenance_dag`: Runs **every Sunday at 2:00 AM** (off-peak hours).
+- **Purpose**: Performs **data file compaction** (rewriting small files into larger, optimal 128 MB files) and **expires old snapshots** (older than 7 days) for all critical Silver and Gold tables.
+- **Why this matters**: Prevents query performance degradation caused by the accumulation of thousands of small files in HDFS, reduces metadata bloat in the Iceberg catalog, and ensures consistent read performance for dashboards.
+
 ---
 
 ## 🚀 Getting Started
